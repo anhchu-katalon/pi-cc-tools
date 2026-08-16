@@ -70,6 +70,71 @@ const ITERM2_IMAGE_PREFIX = "\x1b]1337;File=";
 
 let toolBackgroundMode: "default" | "transparent" | "outlines" = "outlines";
 
+const DISPLAY_SUMMARY_FIELD = "displaySummary";
+const DISPLAY_SUMMARY_MAX_LENGTH = 96;
+const DISPLAY_SUMMARY_GUIDANCE = "Short user-facing phrase describing this call's intent. Keep it concise, use sentence case, omit trailing punctuation, and never include secrets or credentials.";
+const DISPLAY_SUMMARY_ANSI_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]/g;
+
+function isRecord(value: unknown): value is Record<string, any> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeDisplaySummary(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value
+		.replace(DISPLAY_SUMMARY_ANSI_RE, "")
+		.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return normalized ? normalized.slice(0, DISPLAY_SUMMARY_MAX_LENGTH) : undefined;
+}
+
+function getDisplaySummary(args: unknown): string | undefined {
+	return isRecord(args) ? normalizeDisplaySummary(args[DISPLAY_SUMMARY_FIELD]) : undefined;
+}
+
+function stripDisplaySummary(args: unknown): unknown {
+	if (!isRecord(args) || !Object.prototype.hasOwnProperty.call(args, DISPLAY_SUMMARY_FIELD)) return args;
+	const { [DISPLAY_SUMMARY_FIELD]: _displaySummary, ...toolArgs } = args;
+	return toolArgs;
+}
+
+function hasDisplaySummaryParameter(parameters: unknown): boolean {
+	return isRecord(parameters)
+		&& isRecord(parameters.properties)
+		&& Object.prototype.hasOwnProperty.call(parameters.properties, DISPLAY_SUMMARY_FIELD);
+}
+
+function addDisplaySummaryParameter(parameters: unknown, toolLabel: string): any {
+	if (!isRecord(parameters)) return parameters;
+	const sourceProperties = isRecord(parameters.properties) ? parameters.properties : {};
+	if (hasDisplaySummaryParameter(parameters)) return parameters;
+	const next = { ...parameters, properties: {
+		...sourceProperties,
+		[DISPLAY_SUMMARY_FIELD]: {
+			type: "string",
+			description: `${DISPLAY_SUMMARY_GUIDANCE} Describe why ${toolLabel} is being used rather than repeating raw arguments.`,
+			minLength: 4,
+			maxLength: DISPLAY_SUMMARY_MAX_LENGTH,
+		},
+	} };
+	const required = Array.isArray(parameters.required) ? parameters.required : [];
+	(next as any).required = [...new Set([...required, DISPLAY_SUMMARY_FIELD])];
+	return next;
+}
+
+function prepareDisplaySummary(args: unknown, toolLabel: string, originalPrepare?: (args: any) => unknown, receiver?: unknown): any {
+	const summary = getDisplaySummary(args) ?? `Running ${toolLabel}`;
+	const stripped = stripDisplaySummary(args);
+	const prepared = originalPrepare ? originalPrepare.call(receiver, stripped) : stripped;
+	return isRecord(prepared) ? { ...prepared, [DISPLAY_SUMMARY_FIELD]: summary } : prepared;
+}
+
+function displaySummarySuffix(args: unknown, theme: Theme, toolLabel: string): string {
+	const summary = getDisplaySummary(args) ?? `Running ${toolLabel}`;
+	return theme.fg("muted", ` — ${summary}`);
+}
+
 interface SettingsFile {
 	toolBackground?: "default" | "transparent" | "outlines" | "border";
 	readOutputMode?: "hidden" | "summary" | "preview";
@@ -673,11 +738,10 @@ function formatBranchedToolLines(
 	return output;
 }
 
-const NON_GROUPABLE_TOOL_NAMES = new Set(["edit", "write", "apply_patch"]);
 const ACTIVE_TOOL_GROUPS = new Set<any>();
 
 function isGroupableTool(value: unknown): value is InstanceType<typeof ToolExecutionComponent> {
-	return value instanceof ToolExecutionComponent && !NON_GROUPABLE_TOOL_NAMES.has(getToolName(value));
+	return value instanceof ToolExecutionComponent;
 }
 
 class ToolGroupComponent extends Container {
@@ -846,11 +910,35 @@ function isToolGroupComponent(value: unknown): value is ToolGroupComponent {
 	return value instanceof ToolGroupComponent;
 }
 
+function shouldHideGroupedThinkingSummary(value: unknown): boolean {
+	if (!(value instanceof AssistantMessageComponent)) return false;
+	const children = (value as any).contentContainer?.children;
+	if (!Array.isArray(children) || children.length === 0) return false;
+	const thinkingOnly = children.every((child: unknown) => child instanceof HiddenThinkingSummary || child instanceof Spacer);
+	if (!thinkingOnly) return false;
+	const parent = (value as any)[COMPONENT_PARENT];
+	const siblings = parent?.children;
+	if (!Array.isArray(siblings)) return false;
+	const index = siblings.indexOf(value);
+	if (index < 0) return false;
+	for (const direction of [-1, 1]) {
+		for (let cursor = index + direction; cursor >= 0 && cursor < siblings.length; cursor += direction) {
+			const sibling = siblings[cursor];
+			if (isIgnorableToolSeparator(sibling)) continue;
+			return isToolGroupComponent(sibling);
+		}
+	}
+	return false;
+}
+
 function isIgnorableToolSeparator(value: unknown): boolean {
-	if (value instanceof Spacer) return true;
+	if (value instanceof Spacer || value instanceof HiddenThinkingSummary || value instanceof ThinkingParagraph) return true;
 	if (value instanceof AssistantMessageComponent) {
 		const contentChildren = (value as any).contentContainer?.children;
-		return Array.isArray(contentChildren) && contentChildren.length === 0;
+		if (!Array.isArray(contentChildren) || contentChildren.length === 0) return true;
+		return contentChildren.every((child: unknown) =>
+			child instanceof HiddenThinkingSummary || child instanceof ThinkingParagraph || child instanceof Spacer,
+		);
 	}
 	return false;
 }
@@ -2143,6 +2231,7 @@ function patchAssistantMessages(): void {
 	const originalRender = proto.render;
 	if (typeof originalRender === "function" && !proto[ASSISTANT_RENDER_PATCH_FLAG]) {
 		proto.render = function patchedAssistantMessageRender(width: number) {
+			if (shouldHideGroupedThinkingSummary(this)) return [];
 			const message = (this as any).lastMessage;
 			const isFinalResponse = isFinalAssistantMessage(message);
 			// Final-response membership can change after a cached streaming render.
@@ -5081,10 +5170,11 @@ function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any):
 	// Agent / subagent tools get a size-breathing pending marker, not on/off ●.
 	if (isAgentFamilyToolName(name)) ctx.state._agentBreathe = true;
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path);
+	const label = genericToolLabel(name);
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp));
 	return makeText(
 		ctx.lastComponent,
-		toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
+		toolHeader(label, `${summary}${displaySummarySuffix(args, theme, label)}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
 	);
 }
 
@@ -5563,7 +5653,7 @@ function renderApplyPatchCall(args: any, theme: Theme, ctx: any, sp: (path: stri
 	syncToolCallStatus(ctx);
 	const patchText = getStringArg(args, "patchText", "patch_text");
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall("apply_patch", args, theme, sp));
-	const hdr = toolHeader("Apply Patch", summary, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme));
+	const hdr = toolHeader("Apply Patch", `${summary}${displaySummarySuffix(args, theme, "Apply Patch")}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme));
 
 	if (!ctx.argsComplete) return makeText(ctx.lastComponent, hdr);
 	const preview = getCachedApplyPatchPreview(patchText, sp, ctx);
@@ -5973,6 +6063,14 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 // ===========================================================================
 // Extension
 // ===========================================================================
+
+export {
+	addDisplaySummaryParameter,
+	getDisplaySummary,
+	normalizeDisplaySummary,
+	prepareDisplaySummary,
+	stripDisplaySummary,
+};
 
 export default function (pi: ExtensionAPI) {
 	patchToolExecutionBackgroundSync();
@@ -6399,11 +6497,14 @@ export default function (pi: ExtensionAPI) {
 		name: "read",
 		label: "read",
 		description: readTool.description,
-		parameters: readTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return readTool.execute(toolCallId, params, signal, onUpdate);
+		parameters: addDisplaySummaryParameter(readTool.parameters, "read"),
+		prepareArguments(args: any) {
+			return prepareDisplaySummary(args, "Read");
 		},
-		renderCall(args, theme, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any) {
+			return readTool.execute(toolCallId, stripDisplaySummary(params) as any, signal, onUpdate);
+		},
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			// SKILL.md reads: render as [skill] block matching /skill:name style
 			const rawPath = String(args?.path ?? "");
@@ -6427,10 +6528,10 @@ export default function (pi: ExtensionAPI) {
 			});
 			return makeText(
 				ctx.lastComponent,
-				toolHeader("Read", summary, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
+				toolHeader("Read", `${summary}${displaySummarySuffix(args, theme, "Read")}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
 			);
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				return makeText(ctx.lastComponent, runningPreviewBlock(result, theme.fg("dim", "Reading..."), expanded, theme, ctx));
 			}
@@ -6454,21 +6555,24 @@ export default function (pi: ExtensionAPI) {
 		name: "bash",
 		label: "bash",
 		description: bashTool.description,
-		parameters: bashTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return bashTool.execute(toolCallId, params, signal, onUpdate);
+		parameters: addDisplaySummaryParameter(bashTool.parameters, "bash"),
+		prepareArguments(args: any) {
+			return prepareDisplaySummary(args, "Bash");
 		},
-		renderCall(args, theme, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any) {
+			return bashTool.execute(toolCallId, stripDisplaySummary(params) as any, signal, onUpdate);
+		},
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const rewrite = ensureRtkRewriteForContext(ctx, args);
 			const summary = stableCallSummary(ctx, "_callSummary", () => summarizeText(args.command, 72));
 			const rtkBadge = rewrite ? theme.fg("muted", " (RTK)") : "";
 			return makeText(
 				ctx.lastComponent,
-				toolHeader("Bash", `${summary}${rtkBadge}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
+				toolHeader("Bash", `${summary}${rtkBadge}${displaySummarySuffix(args, theme, "Bash")}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
 			);
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			const details = result.details as BashToolDetails | undefined;
 			const rewrite = ensureRtkRewriteForContext(ctx, ctx.args);
 			const output = result.content[0]?.type === "text" ? result.content[0].text : "";
@@ -6515,11 +6619,14 @@ export default function (pi: ExtensionAPI) {
 		name: "grep",
 		label: "grep",
 		description: grepTool.description,
-		parameters: grepTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return grepTool.execute(toolCallId, params, signal, onUpdate);
+		parameters: addDisplaySummaryParameter(grepTool.parameters, "grep"),
+		prepareArguments(args: any) {
+			return prepareDisplaySummary(args, "Grep");
 		},
-		renderCall(args, theme, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any) {
+			return grepTool.execute(toolCallId, stripDisplaySummary(params) as any, signal, onUpdate);
+		},
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
 				let value = `\"${summarizeText(args.pattern, 40)}\"`;
@@ -6528,10 +6635,10 @@ export default function (pi: ExtensionAPI) {
 			});
 			return makeText(
 				ctx.lastComponent,
-				toolHeader("Grep", summary, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
+				toolHeader("Grep", `${summary}${displaySummarySuffix(args, theme, "Grep")}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
 			);
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				return makeText(ctx.lastComponent, runningPreviewBlock(result, theme.fg("dim", "Searching..."), expanded, theme, ctx));
 			}
@@ -6540,7 +6647,7 @@ export default function (pi: ExtensionAPI) {
 			const details = result.details as GrepToolDetails | undefined;
 			const matches = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
-				.filter((line) => line.trim().length > 0);
+				.filter((line: string) => line.trim().length > 0);
 			if (matches.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme));
 			let text = theme.fg("muted", `${matches.length} matches`);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
@@ -6555,11 +6662,14 @@ export default function (pi: ExtensionAPI) {
 		name: "find",
 		label: "find",
 		description: findTool.description,
-		parameters: findTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return findTool.execute(toolCallId, params, signal, onUpdate);
+		parameters: addDisplaySummaryParameter(findTool.parameters, "find"),
+		prepareArguments(args: any) {
+			return prepareDisplaySummary(args, "Find");
 		},
-		renderCall(args, theme, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any) {
+			return findTool.execute(toolCallId, stripDisplaySummary(params) as any, signal, onUpdate);
+		},
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
 				let value = `\"${summarizeText(args.pattern, 40)}\"`;
@@ -6568,10 +6678,10 @@ export default function (pi: ExtensionAPI) {
 			});
 			return makeText(
 				ctx.lastComponent,
-				toolHeader("Find", summary, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
+				toolHeader("Find", `${summary}${displaySummarySuffix(args, theme, "Find")}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
 			);
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				return makeText(ctx.lastComponent, runningPreviewBlock(result, theme.fg("dim", "Finding..."), expanded, theme, ctx));
 			}
@@ -6579,7 +6689,7 @@ export default function (pi: ExtensionAPI) {
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
 			const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
-				.filter((line) => line.trim().length > 0);
+				.filter((line: string) => line.trim().length > 0);
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no files found"), theme));
 			let text = theme.fg("muted", `${items.length} files`);
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${toolOutputDetailHint(theme, expanded)}`, theme));
@@ -6606,19 +6716,22 @@ export default function (pi: ExtensionAPI) {
 		name: "ls",
 		label: "ls",
 		description: lsTool.description,
-		parameters: lsTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return lsTool.execute(toolCallId, params, signal, onUpdate);
+		parameters: addDisplaySummaryParameter(lsTool.parameters, "ls"),
+		prepareArguments(args: any) {
+			return prepareDisplaySummary(args, "List");
 		},
-		renderCall(args, theme, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any) {
+			return lsTool.execute(toolCallId, stripDisplaySummary(params) as any, signal, onUpdate);
+		},
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."));
 			return makeText(
 				ctx.lastComponent,
-				toolHeader("List", summary, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
+				toolHeader("List", `${summary}${displaySummarySuffix(args, theme, "List")}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
 			);
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				return makeText(ctx.lastComponent, runningPreviewBlock(result, theme.fg("dim", "Listing..."), expanded, theme, ctx));
 			}
@@ -6626,7 +6739,7 @@ export default function (pi: ExtensionAPI) {
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
 			const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
-				.filter((line) => line.trim().length > 0);
+				.filter((line: string) => line.trim().length > 0);
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "empty directory"), theme));
 			let text = theme.fg("muted", `${items.length} entries`);
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${toolOutputDetailHint(theme, expanded)}`, theme));
@@ -6657,9 +6770,13 @@ export default function (pi: ExtensionAPI) {
 		name: "write",
 		label: "write",
 		description: writeTool.description,
-		parameters: writeTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
-			const fp = params.path ?? (params as any).file_path ?? "";
+		parameters: addDisplaySummaryParameter(writeTool.parameters, "write"),
+		prepareArguments(args: any) {
+			return prepareDisplaySummary(args, "Write");
+		},
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, _ctx: any) {
+			const toolParams = stripDisplaySummary(params) as any;
+			const fp = toolParams.path ?? toolParams.file_path ?? "";
 			const fullPath = fp ? resolve(cwd, fp) : "";
 			const existedBefore = !!fullPath && fileExistsForTool(cwd, fp);
 			WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore);
@@ -6669,8 +6786,8 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				old = null;
 			}
-			const result = await writeTool.execute(toolCallId, params, signal, onUpdate);
-			const content = params.content ?? "";
+			const result = await writeTool.execute(toolCallId, toolParams, signal, onUpdate);
+			const content = toolParams.content ?? "";
 			if (old !== null && old !== content) {
 				const diff = parseDiff(old, content);
 				(result as any).details = { _type: "diff", summary: summarizeDiff(diff.added, diff.removed), diff, language: lang(fp) };
@@ -6681,7 +6798,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			return result;
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			const fp = args?.path ?? (args as any)?.file_path ?? "";
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"));
 			syncToolCallStatus(ctx);
@@ -6691,10 +6808,10 @@ export default function (pi: ExtensionAPI) {
 				const base = sp(fp);
 				return shouldRevealCallArgs(ctx) ? `${base} ${theme.fg("muted", `(${lineCount(args.content ?? "")} lines)`)}` : base;
 			}, revealSummary);
-			const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme));
+			const hdr = toolHeader(label, `${summary}${displaySummarySuffix(args, theme, label)}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme));
 			return makeText(ctx.lastComponent, hdr);
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				return makeText(ctx.lastComponent, runningPreviewBlock(result, "", expanded, theme, ctx));
 			}
@@ -6772,12 +6889,16 @@ export default function (pi: ExtensionAPI) {
 		name: "edit",
 		label: "edit",
 		description: editTool.description,
-		parameters: editTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
-			const fp = params.path ?? (params as any).file_path ?? "";
-			const operations = getEditOperations(params);
+		parameters: addDisplaySummaryParameter(editTool.parameters, "edit"),
+		prepareArguments(args: any) {
+			return prepareDisplaySummary(args, "Edit");
+		},
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, _ctx: any) {
+			const toolParams = stripDisplaySummary(params) as any;
+			const fp = toolParams.path ?? toolParams.file_path ?? "";
+			const operations = getEditOperations(toolParams);
 			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, cwd) : null;
-			const result = await editTool.execute(toolCallId, params, signal, onUpdate);
+			const result = await editTool.execute(toolCallId, toolParams, signal, onUpdate);
 			if (operations.length === 0) return result;
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations);
 			const baseDetails = (((result as any).details ?? {}) as Record<string, unknown>);
@@ -6808,13 +6929,13 @@ export default function (pi: ExtensionAPI) {
 			};
 			return result;
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			const fp = args?.path ?? (args as any)?.file_path ?? "";
 			const operations = getEditOperations(args);
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"));
 			const summary = stableCallSummary(ctx, "_callSummary", () => shouldRevealCallArgs(ctx) && operations.length > 1 ? `${sp(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}` : sp(fp), revealSummary);
 			syncToolCallStatus(ctx);
-			const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, liveLineCountTrailing(ctx, theme));
+			const hdr = toolHeader("Edit", `${summary}${displaySummarySuffix(args, theme, "Edit")}`, theme, ` ${toolStatusDot(ctx, theme)}`, liveLineCountTrailing(ctx, theme));
 			if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr);
 			const diffWidth = branchDiffWidth();
 			const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`;
@@ -6839,7 +6960,7 @@ export default function (pi: ExtensionAPI) {
 				const body = liveBranchDisplay(ctx.state, theme) ?? (ctx.state._ptDisplay as string | undefined);
 			return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr);
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				return makeText(ctx.lastComponent, indentBranchBlock(runningPreviewBlock(result, theme.fg("dim", "Editing..."), expanded, theme, ctx)));
 			}
@@ -6886,14 +7007,18 @@ export default function (pi: ExtensionAPI) {
 			const rawLabel = typeof record.label === "string" ? record.label.trim() : "";
 			const label = rawLabel && rawLabel !== name && !rawLabel.includes("_") ? rawLabel : humanizeToolName(name);
 			const description = typeof record.description === "string" ? record.description : label;
+			const ownsDisplaySummary = !hasDisplaySummaryParameter(record.parameters);
 			(pi as any).registerTool({
 				name,
 				label,
 				description,
-				parameters: record.parameters,
-				prepareArguments: typeof record.prepareArguments === "function" ? record.prepareArguments : undefined,
+				parameters: addDisplaySummaryParameter(record.parameters, label),
+				prepareArguments(args: any) {
+					if (!ownsDisplaySummary) return typeof record.prepareArguments === "function" ? (record.prepareArguments as any).call(record, args) : args;
+					return prepareDisplaySummary(args, label, typeof record.prepareArguments === "function" ? record.prepareArguments as any : undefined, record);
+				},
 				async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
-					return await Promise.resolve(execute(toolCallId, params, signal, onUpdate, ctx));
+					return await Promise.resolve(execute(toolCallId, ownsDisplaySummary ? stripDisplaySummary(params) : params, signal, onUpdate, ctx));
 				},
 				renderCall(args: any, theme: Theme, ctx: any) {
 					if (name === "apply_patch") return renderApplyPatchCall(args, theme, ctx, sp);
@@ -6902,7 +7027,7 @@ export default function (pi: ExtensionAPI) {
 					const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall(name, args, theme, sp));
 					return makeText(
 						ctx.lastComponent,
-						toolHeader(label, summary, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
+						toolHeader(label, `${summary}${displaySummarySuffix(args, theme, label)}`, theme, toolStatusDot(ctx, theme), liveLineCountTrailing(ctx, theme)),
 					);
 				},
 				renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
@@ -6931,14 +7056,18 @@ export default function (pi: ExtensionAPI) {
 			if (!execute) continue;
 			const label = typeof record.label === "string" ? record.label : name === "mcp" ? "MCP" : `MCP ${name}`;
 			const description = typeof record.description === "string" ? record.description : "MCP tool";
+			const ownsDisplaySummary = !hasDisplaySummaryParameter(record.parameters);
 			(pi as any).registerTool({
 				name,
 				label,
 				description,
-				parameters: record.parameters,
-				prepareArguments: typeof record.prepareArguments === "function" ? record.prepareArguments : undefined,
+				parameters: addDisplaySummaryParameter(record.parameters, label),
+				prepareArguments(args: any) {
+					if (!ownsDisplaySummary) return typeof record.prepareArguments === "function" ? (record.prepareArguments as any).call(record, args) : args;
+					return prepareDisplaySummary(args, label, typeof record.prepareArguments === "function" ? record.prepareArguments as any : undefined, record);
+				},
 				async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
-					return await Promise.resolve(execute(toolCallId, params, signal, onUpdate, ctx));
+					return await Promise.resolve(execute(toolCallId, ownsDisplaySummary ? stripDisplaySummary(params) : params, signal, onUpdate, ctx));
 				},
 				renderCall(args: any, theme: Theme, ctx: any) {
 					return renderGenericToolCall(name, args, theme, ctx);

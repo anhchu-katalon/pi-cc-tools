@@ -32,6 +32,7 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 - **Light Ghostty-sync themes** — edit/write diffs use `github-light` highlighting and light-tinted diff rows; tool pending dots use softer chrome colors
 - **Transparent edit/write diffs** with universal red/green diff colors
 - **Grouped consecutive tool calls** with a compact status header and per-tool glance rows (set `groupToolCalls: false` to disable)
+- **Model-written tool intent** through a required `displaySummary` field, shown beside each call without sending it to the executor
 - **Extra detail toggle** with `Ctrl+Shift+O`, increasing expanded preview caps without making the default view heavy
 - **Global border patch** for all tool rows, including unknown/custom tools
 - **Borderless agent code blocks** with syntax highlighting and subtle background preserved; set `agentCodeBackground: false` to disable the background
