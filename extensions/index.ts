@@ -48,11 +48,9 @@ const RESET = "\x1b[0m";
 const TRANSPARENT_BG = "\x1b[49m";
 const TRANSPARENT_RESET = `${RESET}${TRANSPARENT_BG}`;
 
-// User/code box borders and thinking/thought text: branch color + OUTLINE_CHROME_BRIGHTEN.
+// User box borders and thinking/thought text: branch color + OUTLINE_CHROME_BRIGHTEN.
 // Branch ├└│ stay at `currentToolBranchAnsi` (see syncOutlineChromeFromBranch).
 let BORDER_COLOR = "\x1b[38;5;238m";
-let CODE_BLOCK_LANG_FG = "\x1b[38;2;95;95;95m";
-const CHROME_ITALIC = "\x1b[3m";
 /** Lift outline chrome above branch connectors so boxes and thought read brighter. */
 const OUTLINE_CHROME_BRIGHTEN = 64;
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -82,6 +80,10 @@ interface SettingsFile {
 	extraExpandedPreviewMaxLines?: number;
 	extraToolOutputExpanded?: boolean;
 	groupToolCalls?: boolean;
+	/** Prefix assistant text with Claude-style dot/continuation padding. Defaults to false. */
+	agentOutputPadding?: boolean;
+	/** Add a subtle ANSI background to assistant code lines. Defaults to true. */
+	agentCodeBackground?: boolean;
 	bashOutputMode?: "opencode" | "summary" | "preview";
 	bashCollapsedLines?: number;
 	/** Show a small live output preview while tools are still running. Defaults to true. */
@@ -225,8 +227,6 @@ function stripRenderedHeadingMarkers(line: string): string {
 	return line.replace(/^((?:\x1b\[[0-9;]*m|[ \t])*)#{3,6}[ \t]*((?:\x1b\[[0-9;]*m)*)/, "$1$2");
 }
 
-const PLAIN_FENCE_LANGS = new Set(["text", "txt", "plain", "plaintext", ""]);
-
 function parseRenderedFenceLine(line: string): { kind: "open" | "close"; language: string } | undefined {
 	const plain = stripAnsi(line).trim();
 	if (plain === "```") return { kind: "close", language: "" };
@@ -234,17 +234,6 @@ function parseRenderedFenceLine(line: string): { kind: "open" | "close"; languag
 	const rest = plain.slice(3).trim();
 	if (rest.includes("`")) return undefined;
 	return { kind: "open", language: rest };
-}
-
-function formatCodeBlockLanguageLabel(language: string): string {
-	const raw = language.trim();
-	if (!raw) return "";
-	return raw.toLowerCase();
-}
-
-function mutedDotFill(count: number): string {
-	if (count <= 0) return "";
-	return `${BORDER_COLOR}${"·".repeat(count)}${TRANSPARENT_RESET}`;
 }
 
 function padRenderedLineToWidth(line: string, width: number): string {
@@ -327,54 +316,12 @@ function copyPayloadForLine(line: string): string | undefined {
 	return plain;
 }
 
-function roundedCodeBlockTop(width: number, language: string): string {
-	if (width <= 1) return `${BORDER_COLOR}│${TRANSPARENT_RESET}`;
-	const label = formatCodeBlockLanguageLabel(language);
-	if (!label || width < 8) {
-		const inner = Math.max(0, width - 2);
-		return `${BORDER_COLOR}╭${TRANSPARENT_RESET}${mutedDotFill(inner)}${BORDER_COLOR}╮${TRANSPARENT_RESET}`;
-	}
-	const labelStyled = `${CODE_BLOCK_LANG_FG}${CHROME_ITALIC}${label}${RESET}${TRANSPARENT_RESET}`;
-	const labelW = visibleWidth(labelStyled);
-	const dotCount = Math.max(0, width - 6 - labelW);
-	return `${BORDER_COLOR}╭· ${TRANSPARENT_RESET}${labelStyled} ${mutedDotFill(dotCount)}${BORDER_COLOR} ╮${TRANSPARENT_RESET}`;
-}
-
-function roundedCodeBlockBottom(width: number): string {
-	if (width <= 1) return `${BORDER_COLOR}│${TRANSPARENT_RESET}`;
-	const inner = Math.max(0, width - 2);
-	return `${BORDER_COLOR}╰${TRANSPARENT_RESET}${mutedDotFill(inner)}${BORDER_COLOR}╯${TRANSPARENT_RESET}`;
-}
-
-function borderedCodeBlockLine(line: string, width: number): string {
-	const innerWidth = Math.max(1, width - 4);
-	let content = line;
-	if (visibleWidth(content) > innerWidth) {
-		content = truncateToWidth(content, innerWidth, "", false);
-	}
-	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
-	return `${BORDER_COLOR}│${TRANSPARENT_RESET} ${content}${padding} ${BORDER_COLOR}│${TRANSPARENT_RESET}`;
-}
-
-function boxRenderedCodeBlock(bodyLines: string[], language: string, width: number): string[] {
-	const safeWidth = Math.max(4, Number.isFinite(width) ? Math.floor(width) : 0);
-	const framed = [
-		roundedCodeBlockTop(safeWidth, language),
-		...bodyLines.map((line) => borderedCodeBlockLine(line, safeWidth)),
-		roundedCodeBlockBottom(safeWidth),
-	];
-	return framed.map((line) => padRenderedLineToWidth(line, safeWidth));
-}
-
-function sanitizeRenderedTextBlockLines(lines: string[], width?: number): string[] {
+function sanitizeRenderedTextBlockLines(lines: string[]): string[] {
 	const result: string[] = [];
 	let i = 0;
-	const canBox = typeof width === "number" && width > 0;
 	while (i < lines.length) {
 		const fence = parseRenderedFenceLine(lines[i]);
 		if (fence?.kind === "open") {
-			const language = fence.language;
-			const hideBox = PLAIN_FENCE_LANGS.has(language.trim().toLowerCase());
 			const body: string[] = [];
 			i++;
 			while (i < lines.length) {
@@ -386,13 +333,8 @@ function sanitizeRenderedTextBlockLines(lines: string[], width?: number): string
 				body.push(lines[i]);
 				i++;
 			}
-			if (hideBox) {
-				result.push(...body);
-			} else if (canBox && (body.length > 0 || language.trim())) {
-				result.push(...boxRenderedCodeBlock(body, language, width));
-			} else {
-				result.push(...body);
-			}
+			// Keep Pi's native borderless rendering while preserving highlighted body lines.
+			result.push(...body);
 			continue;
 		}
 		if (fence?.kind === "close") {
@@ -406,7 +348,7 @@ function sanitizeRenderedTextBlockLines(lines: string[], width?: number): string
 }
 
 function isBlankLine(text: string): boolean {
-	return stripAnsi(text).trim().length === 0;
+	return stripOsc133Zones(stripAnsi(text)).trim().length === 0;
 }
 
 function borderLine(width: number): string {
@@ -1229,6 +1171,20 @@ let thinkingBlockInFlight = false;
 let WORKED_LINE_FG = "\x1b[38;2;140;140;140m";
 let currentAgentWorkStartMs: number | undefined;
 let currentAssistantMessageStartMs: number | undefined;
+const finalAssistantMessages = new Set<any>();
+const finalAssistantMessageTimestamps = new Set<number>();
+
+function markFinalAssistantMessage(message: any): void {
+	finalAssistantMessages.add(message);
+	if (typeof message?.timestamp === "number" && Number.isFinite(message.timestamp)) {
+		finalAssistantMessageTimestamps.add(message.timestamp);
+	}
+}
+
+function isFinalAssistantMessage(message: any): boolean {
+	return finalAssistantMessages.has(message)
+		|| (typeof message?.timestamp === "number" && finalAssistantMessageTimestamps.has(message.timestamp));
+}
 // Session-wide accumulators for the "Turn took … (Total time … · N turns)" line.
 // Seeded from the `context` event (which carries the full message history,
 // including resumed sessions) so totals reflect the whole session, not just the
@@ -1408,6 +1364,95 @@ function hasWorkedDurationLine(message: any): boolean {
 	});
 }
 
+function messageHasAssistantText(message: any): boolean {
+	return Array.isArray(message?.content)
+		&& message.content.some((block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim());
+}
+
+function messageHasToolCall(message: any): boolean {
+	return Array.isArray(message?.content) && message.content.some((block: any) => block?.type === "toolCall");
+}
+
+function seedFinalAssistantMessages(messages: any[]): void {
+	finalAssistantMessages.clear();
+	finalAssistantMessageTimestamps.clear();
+	let candidate: any;
+	const addCandidate = () => {
+		if (candidate) markFinalAssistantMessage(candidate);
+		candidate = undefined;
+	};
+	for (const message of messages) {
+		if (message?.role === "user") {
+			addCandidate();
+			continue;
+		}
+		if (message?.role === "assistant" && messageHasAssistantText(message) && !messageHasToolCall(message)) {
+			candidate = message;
+		}
+	}
+	addCandidate();
+}
+
+function finalResponseFrameAnsi(): string {
+	return safeFgAnsi(_toolBranchThemeHint, "accent") ?? "\x1b[38;5;75m";
+}
+
+function finalResponseBorderLine(width: number, label: string | undefined, top: boolean): string {
+	const safeWidth = Math.max(1, Math.floor(width));
+	const frameFg = finalResponseFrameAnsi();
+	const plainLabel = label?.trim() ?? "";
+	if (!plainLabel) {
+		if (!top) return `${frameFg}${"─".repeat(safeWidth)}${TRANSPARENT_RESET}`;
+		if (safeWidth <= 1) return `${frameFg}●${RESET}`;
+		return `${frameFg}●${RESET} ${frameFg}${"─".repeat(safeWidth - 2)}${TRANSPARENT_RESET}`;
+	}
+	const prefix = top ? `● ${plainLabel} ` : " ";
+	const ruleCount = Math.max(1, safeWidth - prefix.length - (top ? 0 : plainLabel.length));
+	const rule = `${frameFg}${"─".repeat(ruleCount)}${TRANSPARENT_RESET}`;
+	const text = `${WORKED_LINE_FG}${plainLabel}${RESET}`;
+	const line = top
+		? `${frameFg}●${RESET} ${text} ${rule}`
+		: `${rule} ${text}`;
+	return clampLineWidth(line, safeWidth);
+}
+
+function finalResponseMetadataLabel(line: string): string | undefined {
+	const plain = stripOsc133Zones(stripAnsi(line)).trim();
+	if (/^Thought for \d+(?:\.\d+)?s$/.test(plain) || /^Thinking…?$/.test(plain)) return plain;
+	if (/^[-*✻] Turn took\b/.test(plain)) return plain.replace(/^[-*] /, "✻ ");
+	return undefined;
+}
+
+function frameFinalAssistantResponse(lines: string[], width: number): string[] {
+	let start = 0;
+	let topLabel: string | undefined;
+	while (start < lines.length) {
+		const label = finalResponseMetadataLabel(lines[start]);
+		if (label) topLabel = topLabel ?? label;
+		if (!isBlankLine(lines[start]) && !label) break;
+		start++;
+	}
+	let end = lines.length - 1;
+	let bottomLabel: string | undefined;
+	while (end >= start) {
+		const label = finalResponseMetadataLabel(lines[end]);
+		if (label) bottomLabel = bottomLabel ?? label;
+		if (!isBlankLine(lines[end]) && !label) break;
+		end--;
+	}
+	if (start > end) return lines;
+	const leading = lines.slice(0, start).filter((line) => !isBlankLine(line) && !finalResponseMetadataLabel(line));
+	const trailing = lines.slice(end + 1).filter((line) => !isBlankLine(line) && !finalResponseMetadataLabel(line));
+	return [
+		...leading,
+		"",
+		finalResponseBorderLine(width, topLabel, true),
+		...lines.slice(start, end + 1),
+		finalResponseBorderLine(width, bottomLabel, false),
+		...trailing,
+	];
+}
+
 function appendWorkedDurationLine(message: any, durationMs: number, sessionTotalMs?: number, turns?: number): void {
 	if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return;
 	const textBlocks = message.content.filter((block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim());
@@ -1463,6 +1508,8 @@ function assistantListBulletMarker(marker: string): string {
 
 function copySafeMarkdownTheme(theme: MarkdownThemeLike): MarkdownThemeLike {
 	const listBullet = theme.listBullet;
+	// Medium gray stays visible on dark terminals without adding copy-visible characters.
+	const codeBlockBackground = readSettings().agentCodeBackground !== false ? "\x1b[48;5;240m" : "";
 	return {
 		...theme,
 		link: (text: string) => stripAnsi(text),
@@ -1470,6 +1517,17 @@ function copySafeMarkdownTheme(theme: MarkdownThemeLike): MarkdownThemeLike {
 		listBullet: listBullet
 			? (marker: string) => listBullet(assistantListBulletMarker(marker))
 			: (marker: string) => assistantListBulletMarker(marker),
+		codeBlock: (text: string) => {
+			const styled = theme.codeBlock(text);
+			return codeBlockBackground && text ? `${codeBlockBackground}${styled}${TRANSPARENT_RESET}` : styled;
+		},
+		highlightCode: theme.highlightCode
+			? (code: string, language?: string) => theme.highlightCode!(code, language).map((line) =>
+				codeBlockBackground && line ? `${codeBlockBackground}${line}${TRANSPARENT_RESET}` : line,
+			)
+			: undefined,
+		// Pi's Markdown renderer otherwise adds two spaces to every code line.
+		codeBlockIndent: "",
 	};
 }
 
@@ -1730,34 +1788,40 @@ class DottedParagraph {
 			this.cachedLines = [""];
 			return this.cachedLines;
 		}
-		// " ● " = 1 margin + dot + space = 3 visible chars
-		const PREFIX_W = 3;
-		if (safeWidth <= PREFIX_W) {
+		const useAgentOutputPadding = readSettings().agentOutputPadding === true;
+		const prefixWidth = useAgentOutputPadding ? 3 : 0;
+		if (safeWidth <= prefixWidth) {
 			this.cachedWidth = width;
 			this.cachedLines = [clampLineWidth(" ● ", safeWidth)];
 			return this.cachedLines;
 		}
-		const contentWidth = safeWidth - PREFIX_W;
+		const contentWidth = safeWidth - prefixWidth;
 		const lines = this.segments.flatMap((segment) => {
 			return segment.kind === "math"
 				? renderMathBlock(segment.raw, contentWidth, this.markdownTheme)
-				: sanitizeRenderedTextBlockLines(segment.md.render(contentWidth), contentWidth);
+				: sanitizeRenderedTextBlockLines(segment.md.render(contentWidth));
 		});
 		const looksLikeTaskStatus = lines.some((line) => /\b(?:transcript:|No output\.|Wrapped up)/.test(stripAnsi(line)));
 		const displayLines = looksLikeTaskStatus ? lines.map(normalizeLeadingCheckGlyph) : lines;
-		let dotPlaced = false;
-		const rendered = displayLines.map((line: string) => {
-			if (!stripAnsi(line).trim()) return `   ${line}`;
-			if (isCodeBoxChromeLine(line)) return `   ${line}`;
-			if (!dotPlaced) {
-				dotPlaced = true;
-				return ` ● ${line}`;
-			}
-			return `   ${line}`;
-		}).map((line) => {
-			const gap = safeWidth - visibleWidth(line);
-			return gap > 0 ? line + " ".repeat(gap) : gap < 0 ? truncateToWidth(line, safeWidth, "", false) : line;
-		});
+		const rendered = useAgentOutputPadding
+			? (() => {
+				let dotPlaced = false;
+				return displayLines.map((line: string) => {
+					if (!stripAnsi(line).trim()) return `   ${line}`;
+					if (isCodeBoxChromeLine(line)) return `   ${line}`;
+					if (!dotPlaced) {
+						dotPlaced = true;
+						return ` ● ${line}`;
+					}
+					return `   ${line}`;
+				}).map((line) => {
+					const gap = safeWidth - visibleWidth(line);
+					return gap > 0 ? line + " ".repeat(gap) : gap < 0 ? truncateToWidth(line, safeWidth, "", false) : line;
+				});
+			})()
+			: displayLines.map((line) =>
+				visibleWidth(line) > safeWidth ? truncateToWidth(line, safeWidth, "", false) : line,
+			);
 		this.cachedWidth = width;
 		this.cachedLines = rendered;
 		return rendered;
@@ -1812,6 +1876,7 @@ class ThinkingParagraph {
 			italic: wrap,
 			strikethrough: wrap,
 			underline: wrap,
+			codeBlockIndent: "",
 			highlightCode: (code: string, _lang?: string) => code.split("\n").map((line) => `${DIM_FG}${line}`),
 		};
 		const plainStyle: ConstructorParameters<typeof Markdown>[4] = {
@@ -1851,7 +1916,7 @@ class ThinkingParagraph {
 			this.cachedLines = [clampLineWidth(` ${prefix} `, safeWidth)];
 			return this.cachedLines;
 		}
-		const lines = sanitizeRenderedTextBlockLines(md.render(safeWidth - PREFIX_W), safeWidth - PREFIX_W);
+		const lines = sanitizeRenderedTextBlockLines(md.render(safeWidth - PREFIX_W));
 		let symbolPlaced = false;
 		const rendered = lines.map((line: string) => {
 			if (!symbolPlaced && stripAnsi(line).trim()) {
@@ -1990,9 +2055,9 @@ function patchCustomMessageRender(): void {
 
 function stripOsc133Zones(line: string): string {
 	return line
-		.replace(OSC133_ZONE_START, "")
-		.replace(OSC133_ZONE_END, "")
-		.replace(OSC133_ZONE_FINAL, "");
+		.replaceAll(OSC133_ZONE_START, "")
+		.replaceAll(OSC133_ZONE_END, "")
+		.replaceAll(OSC133_ZONE_FINAL, "");
 }
 
 function stripBackgroundAnsi(text: string): string {
@@ -2092,7 +2157,10 @@ function patchAssistantMessages(): void {
 	const originalRender = proto.render;
 	if (typeof originalRender === "function" && !proto[ASSISTANT_RENDER_PATCH_FLAG]) {
 		proto.render = function patchedAssistantMessageRender(width: number) {
-			const cached = messageRenderCacheHit(this, width);
+			const message = (this as any).lastMessage;
+			const isFinalResponse = isFinalAssistantMessage(message);
+			// Final-response membership can change after a cached streaming render.
+			const cached = isFinalResponse ? null : messageRenderCacheHit(this, width);
 			if (cached) return cached;
 			const lines = originalRender.call(this, width);
 			if (!Array.isArray(lines) || lines.length === 0) return lines;
@@ -2101,7 +2169,10 @@ function patchAssistantMessages(): void {
 				// caching the rendered output to avoid re-rendering stable children.
 				return storeMessageRenderCache(this, width, lines);
 			}
-			return storeMessageRenderCache(this, width, applyTerminalCopyZones(lines));
+			const copied = applyTerminalCopyZones(lines);
+			// Frame final text responses from every completed turn, not intermediate events.
+			const rendered = isFinalResponse ? frameFinalAssistantResponse(copied, width) : copied;
+			return storeMessageRenderCache(this, width, rendered);
 		};
 		proto[ASSISTANT_RENDER_PATCH_FLAG] = true;
 	}
@@ -3365,13 +3436,12 @@ function currentToolBranchAnsi(theme?: any): string {
 	return toolBranchRgbAnsi(getConfiguredToolBranchGray());
 }
 
-/** User box, code fences, thinking/thought: branch + OUTLINE_CHROME_BRIGHTEN (never same as branch). */
+/** User box and thinking/thought: branch + OUTLINE_CHROME_BRIGHTEN (never same as branch). */
 function syncOutlineChromeFromBranch(theme?: any): void {
 	const outline = outlineChromeAnsiFromBranch(theme);
 	const prevBorder = BORDER_COLOR;
 	BORDER_COLOR = outline;
 	WORKED_LINE_FG = outline;
-	CODE_BLOCK_LANG_FG = outline;
 	if (outline !== prevBorder) bumpToolBranchVisualEpoch();
 }
 
@@ -3595,7 +3665,6 @@ const _explicitFgFields = new Set<"fgAdd" | "fgDel" | "fgDim" | "fgLnum" | "fgRu
 const _claudeStyleDefaults = {
 	BORDER_COLOR: "\x1b[38;5;238m",
 	WORKED_LINE_FG: "\x1b[38;2;140;140;140m",
-	CODE_BLOCK_LANG_FG: "\x1b[38;2;95;95;95m",
 	TOOL_RULE: toolBranchRgbAnsi(DEFAULT_TOOL_BRANCH_GRAY),
 	FG_DIM: "\x1b[38;2;80;80;80m",
 	FG_LNUM: "\x1b[38;2;100;100;100m",
@@ -3612,7 +3681,6 @@ const _claudeStyleDefaults = {
 function resetThemePalette(): void {
 	BORDER_COLOR = _claudeStyleDefaults.BORDER_COLOR;
 	WORKED_LINE_FG = _claudeStyleDefaults.WORKED_LINE_FG;
-	CODE_BLOCK_LANG_FG = _claudeStyleDefaults.CODE_BLOCK_LANG_FG;
 	applyToolBranchColor();
 	TOOL_STATUS_SUCCESS = _claudeStyleDefaults.TOOL_STATUS_SUCCESS;
 	TOOL_STATUS_ERROR = _claudeStyleDefaults.TOOL_STATUS_ERROR;
@@ -4831,6 +4899,15 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 		trackThinkingBlockEvents(event, ctx);
 		patchMessage(event, ctx.ui?.theme);
 	});
+	pi.on("turn_end", async (event: any, ctx: any) => {
+		const message = event?.message;
+		const hasText = message?.role === "assistant" && messageHasAssistantText(message);
+		const hasToolCall = messageHasToolCall(message);
+		if (hasText && !hasToolCall && message.stopReason === "stop" && (!Array.isArray(event.toolResults) || event.toolResults.length === 0)) {
+			markFinalAssistantMessage(message);
+			ctx?.ui?.requestRender?.();
+		}
+	});
 	pi.on("message_end", async (event, ctx) => {
 		const message = (event as any)?.message;
 		if (message?.role === "assistant") {
@@ -4860,11 +4937,19 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 		}
 		patchMessage(event, ctx.ui?.theme);
 	});
-	pi.on("agent_end", async () => {
+	pi.on("agent_end", async (event: any, ctx: any) => {
+		const messages = Array.isArray(event?.messages) ? event.messages : [];
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const message = messages[i];
+			if (message?.role !== "assistant" || !messageHasAssistantText(message) || messageHasToolCall(message)) continue;
+			markFinalAssistantMessage(message);
+			break;
+		}
 		currentAgentWorkStartMs = undefined;
 		currentAssistantMessageStartMs = undefined;
+		ctx?.ui?.requestRender?.();
 	});
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (_event, ctx) => {
 		// Reset session-wide accumulators on every session transition (new / resume /
 		// fork / reload). The `context` event re-seeds them from the new session's
 		// message history, so /new starts fresh while /resume picks up past prompts
@@ -4874,10 +4959,16 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 		// never look "in flight" and re-arm blink timers.
 		currentAgentWorkStartMs = undefined;
 		currentAssistantMessageStartMs = undefined;
+		finalAssistantMessages.clear();
+		finalAssistantMessageTimestamps.clear();
+		const branchEntries = ctx?.sessionManager?.getBranch?.() ?? [];
+		seedFinalAssistantMessages(branchEntries
+			.filter((entry: any) => entry?.type === "message")
+			.map((entry: any) => entry.message));
 		sessionStartMs = undefined;
 		userTurnCount = 0;
 	});
-	pi.on("context", async (event) => {
+	pi.on("context", async (event, ctx) => {
 		const messages = (event as any)?.messages;
 		if (!Array.isArray(messages)) return;
 		// Seed session-wide accumulators from the full message history (covers
@@ -4896,6 +4987,7 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 			sessionStartMs = sessionStartMs === undefined ? earliest : Math.min(sessionStartMs, earliest);
 		}
 		if (userCount > userTurnCount) userTurnCount = userCount;
+		seedFinalAssistantMessages(messages);
 		for (const msg of messages) {
 			if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
 			for (const block of msg.content) {
@@ -4907,6 +4999,7 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 				}
 			}
 		}
+		(ctx?.ui as any)?.requestRender?.();
 	});
 }
 

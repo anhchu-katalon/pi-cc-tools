@@ -71,6 +71,35 @@ const neq = (a: string[], b: string[], label: string) => {
 }
 
 // ---------------------------------------------------------------------------
+// 1b. Final response frame excludes thought and duration metadata.
+// ---------------------------------------------------------------------------
+{
+	const message = {
+		role: "assistant",
+		timestamp: Date.now(),
+		content: [{ type: "text", text: "Thought for 4s\n\nHeartbeat received. npm:pi-compact-display active.\n\n* Turn took 6s (Total time 2h 30m 59s · 4 turns)" }],
+	};
+	for (const handler of fakePi.handlers.get("agent_end") ?? []) {
+		await handler({ messages: [message] }, {});
+	}
+	const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+	const renderedRaw = new AssistantMessageComponent(message as any, false).render(W);
+	const rendered = renderedRaw.map(plain);
+	const thought = rendered.findIndex((line) => line.trim() === "Thought for 4s");
+	const body = rendered.findIndex((line) => line.includes("Heartbeat received."));
+	const duration = rendered.findIndex((line) => line.includes("Turn took 6s") && !line.includes("─"));
+	const top = rendered.findIndex((line) => line.includes("Thought for 4s") && line.includes("●"));
+	const bottom = rendered.findIndex((line) => line.includes("Turn took 6s") && !line.includes("Heartbeat"));
+	if (!(thought === -1 && top >= 1 && rendered[top - 1].trim() === "" && top < body && bottom > body && duration === -1)) {
+		throw new Error("final response frame did not inline thought/duration metadata");
+	}
+	if (!renderedRaw[top].includes("\x1b[38;") || !renderedRaw[bottom].includes("\x1b[38;")) {
+		throw new Error("final response frame lacks colored border ANSI");
+	}
+	console.log("OK  final response frame: colored metadata inline in borders");
+}
+
+// ---------------------------------------------------------------------------
 // 2. User message: immutable content → deterministic across renders.
 // ---------------------------------------------------------------------------
 {

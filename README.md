@@ -34,6 +34,9 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 - **Grouped consecutive tool calls** with a compact status header and per-tool glance rows (set `groupToolCalls: false` to disable)
 - **Extra detail toggle** with `Ctrl+Shift+O`, increasing expanded preview caps without making the default view heavy
 - **Global border patch** for all tool rows, including unknown/custom tools
+- **Borderless agent code blocks** with syntax highlighting and subtle background preserved; set `agentCodeBackground: false` to disable the background
+- **Borderless agent text by default**; set `agentOutputPadding: true` to restore Claude-style dot and continuation padding
+- **Top and bottom separators** around the final response for easier scanning in long sessions
 
 ## Configuration
 
@@ -50,6 +53,7 @@ Set in `.pi/settings.json` or `~/.pi/settings.json`:
   "extraExpandedPreviewMaxLines": 12000,
   "extraToolOutputExpanded": false,
   "groupToolCalls": true,
+  "agentOutputPadding": false,
   "bashOutputMode": "opencode",
   "bashCollapsedLines": 10,
   "liveToolPreview": true,
@@ -66,7 +70,7 @@ When `themeAdaptive` is `true` (default), the following colors are derived from 
 
 | Element | Derived from |
 |---------|--------------|
-| User box, tool rules, code fences | `dim` → `muted` → `borderMuted` → `thinkingText` |
+| User box and tool rules | `dim` → `muted` → `borderMuted` → `thinkingText` |
 | Branch connectors (`├`, `└`, `│`) | **fixed rgb(72)** by default (theme-independent); `/cc-tools branch theme` to follow pi theme |
 | "✻ Turn took Ns" line (final message only, with session total + turn count) | `muted` |
 | Thinking-block text and `∴` marker (marker hidden when thinking is collapsed) | `muted` |
