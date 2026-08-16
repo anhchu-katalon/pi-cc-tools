@@ -2078,19 +2078,6 @@ function stripBackgroundAnsi(text: string): string {
 	});
 }
 
-function roundedUserBorder(width: number, top: boolean): string {
-	if (width <= 1) return `${BORDER_COLOR}│${TRANSPARENT_RESET}`;
-	const left = top ? "╭" : "╰";
-	const right = top ? "╮" : "╯";
-	if (!top || width < 10) {
-		return `${BORDER_COLOR}${left}${"─".repeat(Math.max(0, width - 2))}${right}${TRANSPARENT_RESET}`;
-	}
-	const label = `${WORKED_LINE_FG} User ${TRANSPARENT_RESET}`;
-	const prefix = "─";
-	const suffixWidth = Math.max(0, width - 2 - visibleWidth(prefix) - visibleWidth(label));
-	return `${BORDER_COLOR}${left}${prefix}${TRANSPARENT_RESET}${label}${BORDER_COLOR}${"─".repeat(suffixWidth)}${right}${TRANSPARENT_RESET}`;
-}
-
 function trimAnsiRight(text: string): string {
 	let trimmed = text;
 	while (true) {
@@ -2101,14 +2088,17 @@ function trimAnsiRight(text: string): string {
 }
 
 function cleanUserMessageLine(line: string): string {
-	return `${TRANSPARENT_BG}${trimAnsiRight(stripBackgroundAnsi(stripOsc133Zones(line)))}${TRANSPARENT_BG}`;
+	return trimAnsiRight(stripBackgroundAnsi(stripOsc133Zones(line)));
 }
 
-function borderedUserMessageLine(line: string, width: number): string {
-	const innerWidth = Math.max(1, width - 4);
+function backgroundUserMessageLine(line: string, width: number, first: boolean): string {
+	const label = first ? "User " : "";
+	const innerWidth = Math.max(1, width - 2 - label.length);
 	const content = clampLineWidth(cleanUserMessageLine(line), innerWidth);
+	const backgroundContent = content.replaceAll(RESET, `${RESET}${USER_MESSAGE_BG}`);
 	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
-	return `${BORDER_COLOR}│${TRANSPARENT_RESET} ${content}${padding} ${BORDER_COLOR}│${TRANSPARENT_RESET}`;
+	const labelText = first ? `${WORKED_LINE_FG}User${RESET}${USER_MESSAGE_BG} ` : "";
+	return `${USER_MESSAGE_BG} ${labelText}${USER_MESSAGE_BG}${backgroundContent}${USER_MESSAGE_BG}${padding} ${TRANSPARENT_RESET}`;
 }
 
 function visitMarkdownDescendants(root: unknown, visit: (md: InstanceType<typeof Markdown>) => void): void {
@@ -2136,16 +2126,12 @@ function patchUserMessageRender(): void {
 				child.invalidate?.();
 			}
 		});
-		const borderWidth = Math.max(1, width);
-		const contentWidth = Math.max(1, borderWidth - 4);
+		const boxWidth = Math.max(1, width);
+		const contentWidth = Math.max(1, boxWidth - 7);
 		const lines = originalRender.call(this, contentWidth);
 		if (!Array.isArray(lines) || lines.length === 0) return lines;
-		const rendered = [
-			roundedUserBorder(borderWidth, true),
-			...lines.map((line: string) => borderedUserMessageLine(line, borderWidth)),
-			roundedUserBorder(borderWidth, false),
-		];
-		const clamped = rendered.map((line) => clampLineWidth(line, borderWidth));
+		const rendered = lines.map((line: string, index: number) => backgroundUserMessageLine(line, boxWidth, index === 0));
+		const clamped = rendered.map((line) => clampLineWidth(line, boxWidth));
 		return storeMessageRenderCache(this, width, applyTerminalCopyZones(clamped));
 	};
 	proto[USER_MESSAGE_PATCH_FLAG] = true;
@@ -3340,6 +3326,7 @@ let BG_GUTTER_ADD = "\x1b[49m";
 let BG_GUTTER_DEL = "\x1b[49m";
 let BG_EMPTY = "\x1b[49m";
 let BG_BASE = "\x1b[49m";
+let USER_MESSAGE_BG = "\x1b[48;5;236m";
 
 let FG_ADD = "\x1b[38;2;100;180;120m";
 let FG_DEL = "\x1b[38;2;200;100;100m";
@@ -3637,6 +3624,9 @@ function autoDeriveBgFromTheme(theme: any): void {
 		(useTheme && themeBgRgb(theme, "toolSuccessBg")) ||
 		(useTheme && themeBgRgb(theme, "userMessageBg")) ||
 		(onLight ? FALLBACK_BASE_BG_LIGHT : FALLBACK_BASE_BG_DARK);
+	const userAccent = (useTheme && themeFgRgb(theme, "accent")) ||
+		(onLight ? { r: 65, g: 95, b: 150 } : { r: 90, g: 150, b: 220 });
+	USER_MESSAGE_BG = rgbToBgAnsi(mixRgb(base, userAccent, onLight ? 0.08 : 0.14));
 
 	const addTint = mixRgb(addFgRgb, ADDITION_TINT_TARGET, 0.35);
 	const delTint = mixRgb(delFgRgb, DELETION_TINT_TARGET, 0.65);
@@ -6012,7 +6002,7 @@ export default function (pi: ExtensionAPI) {
 	// /cc-tools command — control tool chrome, grouping, and detail level.
 	const TOOL_MODES = ["outlines", "transparent", "default"] as const;
 	const TOOL_BOOL_MODES = ["on", "off", "toggle", "status"] as const;
-	const TOOL_SUBCOMMANDS = [...TOOL_MODES, "group", "detail", "branch", "status"] as const;
+	const TOOL_SUBCOMMANDS = [...TOOL_MODES, "group", "detail", "branch", "reload", "status"] as const;
 	const booleanMode = (raw: string | undefined, current: boolean): boolean | "status" | undefined => {
 		const mode = raw || "toggle";
 		if (mode === "on") return true;
@@ -6055,6 +6045,7 @@ export default function (pi: ExtensionAPI) {
 							m === "group" ? "Toggle grouped adjacent/concurrent tool rows"
 							: m === "detail" ? "Toggle Ctrl+Shift+O extra-detail mode"
 							: m === "branch" ? "├ └ │ gray (0-255), theme, fixed, or reset"
+							: m === "reload" ? "Reload settings.json and rerender the UI"
 							: m === "status" ? "Show tool UI settings"
 							: m === "outlines" ? "Horizontal rules around each tool (default)"
 							: m === "transparent" ? "No borders or backgrounds"
@@ -6081,6 +6072,22 @@ export default function (pi: ExtensionAPI) {
 			const sub = parts[0] ?? "";
 			if (!sub || sub === "status") {
 				notifyToolStatus(ctx);
+				return;
+			}
+
+			if (sub === "reload") {
+				_settingsCache = null;
+				toolBackgroundOverride = null;
+				syncToolBackgroundMode();
+				syncExtraToolDetailMode();
+				applyDiffPalette();
+				if (ctx.hasUI) {
+					rebindUiChromeToTheme(ctx);
+					ctx.ui.setToolsExpanded(ctx.ui.getToolsExpanded());
+					(ctx.ui as any).invalidate?.();
+					(ctx.ui as any).requestRender?.();
+					ctx.ui.notify("cc-tools settings reloaded", "info");
+				}
 				return;
 			}
 
@@ -6207,8 +6214,8 @@ export default function (pi: ExtensionAPI) {
 					const chromePreview = resolveThemeChromeFg(theme);
 					// Print a short preview of what we derived.
 					const preview = [
-						`chrome      : ${chromePreview ? `${chromePreview}─┌ User ├─\x1b[39m` : "(unchanged)"}`,
-						`  (user box, tool rules, branches)`, 
+						`chrome      : ${chromePreview ? `${chromePreview}●──\x1b[39m` : "(unchanged)"}`,
+						`  (user box tint, tool rules, branches)`,
 						`muted text  : ${safeFgAnsi(theme, "muted") ? `${safeFgAnsi(theme, "muted")}example dim text\x1b[39m` : "(unchanged)"}`,
 						`diff add    : ${safeFgAnsi(theme, "toolDiffAdded") ? `${safeFgAnsi(theme, "toolDiffAdded")}+ added line\x1b[39m` : "(unchanged)"}`,
 						`diff del    : ${safeFgAnsi(theme, "toolDiffRemoved") ? `${safeFgAnsi(theme, "toolDiffRemoved")}- removed line\x1b[39m` : "(unchanged)"}`,
