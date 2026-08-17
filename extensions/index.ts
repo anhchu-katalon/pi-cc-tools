@@ -1596,8 +1596,8 @@ function assistantListBulletMarker(marker: string): string {
 
 function copySafeMarkdownTheme(theme: MarkdownThemeLike): MarkdownThemeLike {
 	const listBullet = theme.listBullet;
-	// Medium gray stays visible on dark terminals without adding copy-visible characters.
-	const codeBlockBackground = readSettings().agentCodeBackground !== false ? "\x1b[48;5;240m" : "";
+	// Subtle gray separates code from prose without turning diagrams into a solid panel.
+	const codeBlockBackground = readSettings().agentCodeBackground !== false ? "\x1b[48;5;236m" : "";
 	return {
 		...theme,
 		link: (text: string) => stripAnsi(text),
