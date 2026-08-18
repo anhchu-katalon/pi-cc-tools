@@ -1621,6 +1621,20 @@ function assistantListBulletMarker(marker: string): string {
 	return marker;
 }
 
+// Paint a fenced code block as a solid rectangle: re-assert the background after
+// every internal reset (so syntax tokens don't punch holes) and pad each row to
+// the block's widest visible line (so the right edge is straight, not ragged).
+function paintCodeBlockLines(lines: string[], bg: string): string[] {
+	if (!bg) return lines;
+	let maxWidth = 0;
+	for (const line of lines) maxWidth = Math.max(maxWidth, visibleWidth(line));
+	return lines.map((line) => {
+		const filled = line.replaceAll(RESET, `${RESET}${bg}`);
+		const pad = " ".repeat(Math.max(0, maxWidth - visibleWidth(line)));
+		return `${bg}${filled}${pad}${TRANSPARENT_RESET}`;
+	});
+}
+
 function copySafeMarkdownTheme(theme: MarkdownThemeLike): MarkdownThemeLike {
 	const listBullet = theme.listBullet;
 	// Subtle gray separates code from prose without turning diagrams into a solid panel.
@@ -1637,12 +1651,14 @@ function copySafeMarkdownTheme(theme: MarkdownThemeLike): MarkdownThemeLike {
 		},
 		codeBlock: (text: string) => {
 			const styled = theme.codeBlock(text);
-			return codeBlockBackground && text ? `${codeBlockBackground}${styled}${TRANSPARENT_RESET}` : styled;
+			if (!codeBlockBackground || !text) return styled;
+			return paintCodeBlockLines(styled.split("\n"), codeBlockBackground).join("\n");
 		},
 		highlightCode: theme.highlightCode
-			? (code: string, language?: string) => theme.highlightCode!(code, language).map((line) =>
-				codeBlockBackground && line ? `${codeBlockBackground}${line}${TRANSPARENT_RESET}` : line,
-			)
+			? (code: string, language?: string) =>
+				codeBlockBackground
+					? paintCodeBlockLines(theme.highlightCode!(code, language), codeBlockBackground)
+					: theme.highlightCode!(code, language)
 			: undefined,
 		// Pi's Markdown renderer otherwise adds two spaces to every code line.
 		codeBlockIndent: "",
