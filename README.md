@@ -38,6 +38,7 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 - **Borderless agent code blocks** with syntax highlighting and subtle background preserved; set `agentCodeBackground: false` to disable the background
 - **Borderless agent text by default**; set `agentOutputPadding: true` to restore Claude-style dot and continuation padding
 - **Right-aligned user bubbles** in a chat-app layout (sized to content, capped near 70% width); set `userMessageAlign: "left"` for the full-width `User` bar
+- **Folded completed work** (chat-app style): finished thinking and tool calls collapse to their one-line summaries so only final responses stay prominent; `Ctrl+Shift+W` reveals every step, and `collapseCompletedWork: false` disables folding
 - **Top and bottom separators** around the final response for easier scanning in long sessions
 
 ## Configuration

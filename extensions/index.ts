@@ -151,6 +151,8 @@ interface SettingsFile {
 	agentCodeBackground?: boolean;
 	/** Chat-app style alignment for user message bubbles. Defaults to "right". */
 	userMessageAlign?: "left" | "right";
+	/** Fold completed thinking + tool calls, leaving only final responses. Defaults to true. Toggle live with Ctrl+Shift+W. */
+	collapseCompletedWork?: boolean;
 	bashOutputMode?: "opencode" | "summary" | "preview";
 	bashCollapsedLines?: number;
 	/** Show a small live output preview while tools are still running. Defaults to true. */
@@ -867,12 +869,14 @@ class ToolGroupComponent extends Container {
 		if (status.success) countParts.push(statusText("success", status.success));
 		if (status.error) countParts.push(statusText("error", status.error));
 		const countsText = countParts.join(`${TRANSPARENT_RESET} • `);
-		const summary = ` ${light} ${summaryLabel} ${countsText}${names ? ` ${TRANSPARENT_RESET}• ${names}` : ""}${toolOutputDetailHint(undefined as any, this.expanded, true)}`;
+		// Folded completed work: show only the group summary line, no per-tool rows.
+		const folded = status.pending === 0 && workCollapseActive();
+		const summary = ` ${light} ${summaryLabel} ${countsText}${names ? ` ${TRANSPARENT_RESET}• ${names}` : ""}${folded ? "" : toolOutputDetailHint(undefined as any, this.expanded, true)}`;
 		const lines = [" ".repeat(safeWidth), clampLineWidth(summary, safeWidth)];
 		const childWidth = Math.max(1, safeWidth - 6);
 		const total = this.tools.length;
 
-		for (let index = 0; index < total; index++) {
+		for (let index = 0; !folded && index < total; index++) {
 			const tool = this.tools[index];
 			const rawLines = this.expanded
 				? getExpandedToolGroupLines(tool, childWidth, groupedName ? label : undefined)
@@ -1134,6 +1138,19 @@ let extraToolOutputExpanded = false;
 
 function syncExtraToolDetailMode(): void {
 	extraToolOutputExpanded = readSettings().extraToolOutputExpanded === true;
+}
+
+// When true the user has asked to reveal every intermediary step; when false and
+// the feature is enabled, completed thinking + tool calls fold away.
+let showAllWork = false;
+
+function collapseCompletedWorkEnabled(): boolean {
+	return readSettings().collapseCompletedWork !== false;
+}
+
+/** True while completed work should render folded. */
+function workCollapseActive(): boolean {
+	return collapseCompletedWorkEnabled() && !showAllWork;
 }
 
 function setExtraToolDetailMode(enabled: boolean): void {
@@ -2261,6 +2278,8 @@ function patchAssistantMessages(): void {
 			if (shouldHideGroupedThinkingSummary(this)) return [];
 			const message = (this as any).lastMessage;
 			const isFinalResponse = isFinalAssistantMessage(message);
+			// Folded intermediary turn: thinking + narration that precede tool calls disappear.
+			if (!isFinalResponse && (this as any).hasToolCalls && workCollapseActive()) return [];
 			// Final-response membership can change after a cached streaming render.
 			const cached = isFinalResponse ? null : messageRenderCacheHit(this, width);
 			if (cached) return cached;
@@ -6120,6 +6139,22 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.hasUI) {
 				ctx.ui.setToolsExpanded(ctx.ui.getToolsExpanded());
 				ctx.ui.notify(`Extra tool detail: ${extraToolOutputExpanded ? "on" : "off"}`, "info");
+			}
+		},
+	});
+
+	pi.registerShortcut("ctrl+shift+w", {
+		description: "Toggle folding of completed thinking + tool calls",
+		handler: async (ctx) => {
+			if (!collapseCompletedWorkEnabled()) {
+				if (ctx.hasUI) ctx.ui.notify("Work folding disabled (set collapseCompletedWork: true)", "info");
+				return;
+			}
+			showAllWork = !showAllWork;
+			bumpToolBranchVisualEpoch();
+			if (ctx.hasUI) {
+				ctx.ui.setToolsExpanded(ctx.ui.getToolsExpanded());
+				ctx.ui.notify(`Completed work: ${showAllWork ? "expanded" : "folded"}`, "info");
 			}
 		},
 	});
