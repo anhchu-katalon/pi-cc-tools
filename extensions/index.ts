@@ -1519,16 +1519,14 @@ function finalResponseBorderLine(width: number, label: string | undefined, top: 
 	const frameFg = finalResponseFrameAnsi();
 	const plainLabel = label?.trim() ?? "";
 	if (!plainLabel) {
-		if (!top) return `${frameFg}${"─".repeat(safeWidth)}${TRANSPARENT_RESET}`;
-		if (safeWidth <= 1) return `${frameFg}●${RESET}`;
-		return `${frameFg}●${RESET} ${frameFg}${"─".repeat(safeWidth - 2)}${TRANSPARENT_RESET}`;
+		return `${frameFg}${"─".repeat(safeWidth)}${TRANSPARENT_RESET}`;
 	}
-	const prefix = top ? `● ${plainLabel} ` : " ";
+	const prefix = top ? `${plainLabel} ` : " ";
 	const ruleCount = Math.max(1, safeWidth - prefix.length - (top ? 0 : plainLabel.length));
 	const rule = `${frameFg}${"─".repeat(ruleCount)}${TRANSPARENT_RESET}`;
 	const text = `${WORKED_LINE_FG}${plainLabel}${RESET}`;
 	const line = top
-		? `${frameFg}●${RESET} ${text} ${rule}`
+		? `${text} ${rule}`
 		: `${rule} ${text}`;
 	return clampLineWidth(line, safeWidth);
 }
@@ -2221,9 +2219,11 @@ function backgroundUserMessageLine(line: string, width: number, first: boolean):
 	return `${USER_MESSAGE_BG} ${labelText}${USER_MESSAGE_BG}${backgroundContent}${USER_MESSAGE_BG}${padding} ${TRANSPARENT_RESET}`;
 }
 
-/** ChatGPT-style bubble: sized to content, capped at ~70% width, pushed to the right edge. */
+/** ChatGPT-style bubble: sized to content, capped at ~70% width, floated off the right edge. */
 function rightAlignedUserMessageLines(lines: string[], width: number): string[] {
-	const cap = Math.max(12, Math.floor(width * 0.7));
+	const gutter = 2;
+	const usable = Math.max(4, width - gutter);
+	const cap = Math.max(12, Math.floor(usable * 0.7));
 	const innerMax = Math.max(1, cap - 2);
 	const cleaned = lines.map(cleanUserMessageLine);
 	const bubbleInner = Math.min(innerMax, Math.max(1, ...cleaned.map((line) => visibleWidth(line))));
@@ -2232,7 +2232,7 @@ function rightAlignedUserMessageLines(lines: string[], width: number): string[] 
 		const backgroundContent = content.replaceAll(RESET, `${RESET}${USER_MESSAGE_BG}`);
 		const padding = " ".repeat(Math.max(0, bubbleInner - visibleWidth(content)));
 		const bubble = `${USER_MESSAGE_BG} ${backgroundContent}${USER_MESSAGE_BG}${padding} ${TRANSPARENT_RESET}`;
-		const leftPad = " ".repeat(Math.max(0, width - (bubbleInner + 2)));
+		const leftPad = " ".repeat(Math.max(0, usable - (bubbleInner + 2)));
 		return `${leftPad}${bubble}`;
 	});
 }

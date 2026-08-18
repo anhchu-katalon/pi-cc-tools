@@ -88,7 +88,7 @@ const neq = (a: string[], b: string[], label: string) => {
 	const thought = rendered.findIndex((line) => line.trim() === "Thought for 4s");
 	const body = rendered.findIndex((line) => line.includes("Heartbeat received."));
 	const duration = rendered.findIndex((line) => line.includes("Turn took 6s") && !line.includes("─"));
-	const top = rendered.findIndex((line) => line.includes("Thought for 4s") && line.includes("●"));
+	const top = rendered.findIndex((line) => line.includes("Thought for 4s") && line.includes("─"));
 	const bottom = rendered.findIndex((line) => line.includes("Turn took 6s") && !line.includes("Heartbeat"));
 	if (!(thought === -1 && top >= 1 && rendered[top - 1].trim() === "" && top < body && bottom > body && duration === -1)) {
 		throw new Error("final response frame did not inline thought/duration metadata");
