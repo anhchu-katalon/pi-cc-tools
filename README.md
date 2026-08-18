@@ -33,12 +33,12 @@ Claude Code inspired tool rendering for Pi — Shiki-powered diffs, status dots,
 - **Transparent edit/write diffs** with universal red/green diff colors
 - **Grouped consecutive tool calls** with a compact status header and per-tool glance rows (set `groupToolCalls: false` to disable)
 - **Model-written tool intent** through a required `displaySummary` field, shown beside each call without sending it to the executor
-- **Extra detail toggle** with `Ctrl+Shift+O`, increasing expanded preview caps without making the default view heavy
+- **Extra detail toggle** with `Ctrl+Shift+D`, increasing expanded preview caps without making the default view heavy
 - **Global border patch** for all tool rows, including unknown/custom tools
 - **Borderless agent code blocks** with syntax highlighting and subtle background preserved; set `agentCodeBackground: false` to disable the background
 - **Borderless agent text by default**; set `agentOutputPadding: true` to restore Claude-style dot and continuation padding
 - **Right-aligned user bubbles** in a chat-app layout (sized to content, capped near 70% width); set `userMessageAlign: "left"` for the full-width `User` bar
-- **Folded completed work** (chat-app style): finished thinking and tool calls collapse to their one-line summaries so only final responses stay prominent; `Ctrl+Shift+W` reveals every step, and `collapseCompletedWork: false` disables folding
+- **Folded completed work** (chat-app style): finished thinking and tool calls collapse to their one-line summaries so only final responses stay prominent; `Ctrl+Shift+O` reveals every step, and `collapseCompletedWork: false` disables folding
 - **Top and bottom separators** around the final response for easier scanning in long sessions
 
 ## Configuration
@@ -128,7 +128,7 @@ Use `/cc-tools` to control tool UI at runtime:
 /cc-tools outlines        # tool style: outlines, transparent, or default
 /cc-tools group toggle    # toggle grouped adjacent/concurrent tool calls
 /cc-tools group off       # disable grouping (also ungroups current grouped rows)
-/cc-tools detail toggle   # same mode as Ctrl+Shift+O
+/cc-tools detail toggle   # same mode as Ctrl+Shift+D
 ```
 
 ### Output modes
@@ -146,8 +146,8 @@ Use `/cc-tools` to control tool UI at runtime:
 |---------|---------|-------------|
 | `previewLines` | `8` | Lines shown in collapsed preview mode |
 | `expandedPreviewMaxLines` | `4000` | Max lines when expanded with Ctrl+O |
-| `extraExpandedPreviewMaxLines` | `12000` | Max lines after Ctrl+Shift+O extra-detail mode |
-| `extraToolOutputExpanded` | `false` | Start with Ctrl+Shift+O extra-detail mode enabled |
+| `extraExpandedPreviewMaxLines` | `12000` | Max lines after Ctrl+Shift+D extra-detail mode |
+| `extraToolOutputExpanded` | `false` | Start with Ctrl+Shift+D extra-detail mode enabled |
 | `groupToolCalls` | `true` | Group adjacent/concurrent tool calls under a compact status header |
 | `bashCollapsedLines` | `10` | Lines for collapsed bash output |
 | `liveToolPreview` | `true` | Show a small live output preview while tools are still running |

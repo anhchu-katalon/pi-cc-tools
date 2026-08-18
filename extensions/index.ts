@@ -151,7 +151,7 @@ interface SettingsFile {
 	agentCodeBackground?: boolean;
 	/** Chat-app style alignment for user message bubbles. Defaults to "right". */
 	userMessageAlign?: "left" | "right";
-	/** Fold completed thinking + tool calls, leaving only final responses. Defaults to true. Toggle live with Ctrl+Shift+W. */
+	/** Fold completed thinking + tool calls, leaving only final responses. Defaults to true. Toggle live with Ctrl+Shift+O. */
 	collapseCompletedWork?: boolean;
 	bashOutputMode?: "opencode" | "summary" | "preview";
 	bashCollapsedLines?: number;
@@ -1170,7 +1170,7 @@ function expandHint(_theme: Theme, action: "expand" | "collapse" | "toggle" = "t
 }
 
 function deepExpandHint(): string {
-	return ` • ${rawKeyHint("ctrl+shift+o", extraToolOutputExpanded ? "less detail" : "more detail")}`;
+	return ` • ${rawKeyHint("ctrl+shift+d", extraToolOutputExpanded ? "less detail" : "more detail")}`;
 }
 
 function toolOutputDetailHint(theme: Theme, expanded: boolean, hasMore = false): string {
@@ -6132,7 +6132,7 @@ export default function (pi: ExtensionAPI) {
 	registerThinkingLabels(pi);
 	syncExtraToolDetailMode();
 
-	pi.registerShortcut("ctrl+shift+o", {
+	pi.registerShortcut("ctrl+shift+d", {
 		description: "Toggle extra tool output detail",
 		handler: async (ctx) => {
 			setExtraToolDetailMode(!extraToolOutputExpanded);
@@ -6143,7 +6143,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerShortcut("ctrl+shift+w", {
+	pi.registerShortcut("ctrl+shift+o", {
 		description: "Toggle folding of completed thinking + tool calls",
 		handler: async (ctx) => {
 			if (!collapseCompletedWorkEnabled()) {
@@ -6185,13 +6185,13 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify([
 			`Tool style: ${toolBackgroundMode}`,
 			`Tool grouping: ${toolGroupingEnabled() ? "on" : "off"}`,
-			`Extra detail: ${extraToolOutputExpanded ? "on" : "off"} (${rawKeyHint("ctrl+shift+o", "toggle")})`,
+			`Extra detail: ${extraToolOutputExpanded ? "on" : "off"} (${rawKeyHint("ctrl+shift+d", "toggle")})`,
 			branchLine,
 			`  /cc-tools branch <0-255> | theme | fixed | reset`,
 		].join("\n"), "info");
 	};
 	pi.registerCommand("cc-tools", {
-		description: "Control tool UI: style, grouped rows, and Ctrl+Shift+O extra-detail mode",
+		description: "Control tool UI: style, grouped rows, and Ctrl+Shift+D extra-detail mode",
 		getArgumentCompletions(prefix) {
 			const parts = prefix.trimStart().split(/\s+/);
 			const first = parts[0] ?? "";
@@ -6203,7 +6203,7 @@ export default function (pi: ExtensionAPI) {
 						label: m,
 						description:
 							m === "group" ? "Toggle grouped adjacent/concurrent tool rows"
-							: m === "detail" ? "Toggle Ctrl+Shift+O extra-detail mode"
+							: m === "detail" ? "Toggle Ctrl+Shift+D extra-detail mode"
 							: m === "branch" ? "├ └ │ gray (0-255), theme, fixed, or reset"
 							: m === "reload" ? "Reload settings.json and rerender the UI"
 							: m === "status" ? "Show tool UI settings"
