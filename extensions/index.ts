@@ -1153,6 +1153,15 @@ function workCollapseActive(): boolean {
 	return collapseCompletedWorkEnabled() && !showAllWork;
 }
 
+/** Fold or reveal completed work; re-enables the feature when folding was disabled. */
+function setWorkFolded(folded: boolean): void {
+	if (folded && readSettings().collapseCompletedWork === false) {
+		writeSettingsKey("collapseCompletedWork", true);
+	}
+	showAllWork = !folded;
+	bumpToolBranchVisualEpoch();
+}
+
 function setExtraToolDetailMode(enabled: boolean): void {
 	extraToolOutputExpanded = enabled;
 	writeSettingsKey("extraToolOutputExpanded", enabled);
@@ -6162,7 +6171,7 @@ export default function (pi: ExtensionAPI) {
 	// /cc-tools command — control tool chrome, grouping, and detail level.
 	const TOOL_MODES = ["outlines", "transparent", "default"] as const;
 	const TOOL_BOOL_MODES = ["on", "off", "toggle", "status"] as const;
-	const TOOL_SUBCOMMANDS = [...TOOL_MODES, "group", "detail", "branch", "reload", "status"] as const;
+	const TOOL_SUBCOMMANDS = [...TOOL_MODES, "group", "detail", "fold", "branch", "reload", "status"] as const;
 	const booleanMode = (raw: string | undefined, current: boolean): boolean | "status" | undefined => {
 		const mode = raw || "toggle";
 		if (mode === "on") return true;
@@ -6204,6 +6213,7 @@ export default function (pi: ExtensionAPI) {
 						description:
 							m === "group" ? "Toggle grouped adjacent/concurrent tool rows"
 							: m === "detail" ? "Toggle Ctrl+Shift+D extra-detail mode"
+							: m === "fold" ? "Fold/reveal completed work (Ctrl+Shift+O)"
 							: m === "branch" ? "├ └ │ gray (0-255), theme, fixed, or reset"
 							: m === "reload" ? "Reload settings.json and rerender the UI"
 							: m === "status" ? "Show tool UI settings"
@@ -6219,7 +6229,7 @@ export default function (pi: ExtensionAPI) {
 					.filter((o) => o.startsWith(second))
 					.map((o) => ({ value: `branch ${o}`, label: o, description: "Branch connector color" }));
 			}
-			if (first === "group" || first === "detail" || first === "extra") {
+			if (first === "group" || first === "detail" || first === "extra" || first === "fold") {
 				const second = parts[1] ?? "";
 				return TOOL_BOOL_MODES
 					.filter((m) => m.startsWith(second))
@@ -6325,6 +6335,24 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			if (sub === "fold") {
+				const next = booleanMode(parts[1], workCollapseActive());
+				if (next === undefined) {
+					if (ctx.hasUI) ctx.ui.notify(`Usage: /cc-tools fold ${TOOL_BOOL_MODES.join("|")}`, "error");
+					return;
+				}
+				if (next === "status") {
+					if (ctx.hasUI) ctx.ui.notify(`Completed work: ${workCollapseActive() ? "folded" : "expanded"}`, "info");
+					return;
+				}
+				setWorkFolded(next);
+				if (ctx.hasUI) {
+					ctx.ui.setToolsExpanded(ctx.ui.getToolsExpanded());
+					ctx.ui.notify(`Completed work: ${workCollapseActive() ? "folded" : "expanded"}`, "info");
+				}
+				return;
+			}
+
 			if (!(TOOL_MODES as readonly string[]).includes(sub)) {
 				if (ctx.hasUI) ctx.ui.notify(`Unknown option "${sub}". Try /cc-tools status, /cc-tools branch 72, or /cc-tools group toggle.`, "error");
 				return;
@@ -6335,6 +6363,32 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.hasUI) {
 				applyToolBackgroundMode(ctx.ui.theme);
 				ctx.ui.notify(`Tool style → ${sub}`, "info");
+			}
+		},
+	});
+
+	// /cc-fold — standalone alias for folding completed work (fallback when Ctrl+Shift+O is intercepted).
+	pi.registerCommand("cc-fold", {
+		description: "Fold or reveal completed thinking + tool calls (same as Ctrl+Shift+O)",
+		getArgumentCompletions(prefix) {
+			return TOOL_BOOL_MODES
+				.filter((m) => m.startsWith(prefix.trim()))
+				.map((m) => ({ value: m, label: m, description: `${m} folding` }));
+		},
+		async handler(args, ctx) {
+			const next = booleanMode(args.trim().toLowerCase() || "toggle", workCollapseActive());
+			if (next === undefined) {
+				if (ctx.hasUI) ctx.ui.notify(`Usage: /cc-fold ${TOOL_BOOL_MODES.join("|")}`, "error");
+				return;
+			}
+			if (next === "status") {
+				if (ctx.hasUI) ctx.ui.notify(`Completed work: ${workCollapseActive() ? "folded" : "expanded"}`, "info");
+				return;
+			}
+			setWorkFolded(next);
+			if (ctx.hasUI) {
+				ctx.ui.setToolsExpanded(ctx.ui.getToolsExpanded());
+				ctx.ui.notify(`Completed work: ${workCollapseActive() ? "folded" : "expanded"}`, "info");
 			}
 		},
 	});
