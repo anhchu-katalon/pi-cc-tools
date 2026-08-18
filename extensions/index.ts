@@ -1484,7 +1484,8 @@ function seedFinalAssistantMessages(messages: any[]): void {
 }
 
 function finalResponseFrameAnsi(): string {
-	return safeFgAnsi(_toolBranchThemeHint, "accent") ?? "\x1b[38;5;75m";
+	// Chrome, not signal: keep the final-response rules a muted gray instead of the theme accent.
+	return BORDER_COLOR;
 }
 
 function finalResponseBorderLine(width: number, label: string | undefined, top: boolean): string {
@@ -1604,9 +1605,12 @@ function copySafeMarkdownTheme(theme: MarkdownThemeLike): MarkdownThemeLike {
 		...theme,
 		link: (text: string) => stripAnsi(text),
 		linkUrl: (text: string) => stripAnsi(text),
-		listBullet: listBullet
-			? (marker: string) => listBullet(assistantListBulletMarker(marker))
-			: (marker: string) => assistantListBulletMarker(marker),
+		listBullet: (marker: string) => {
+			const styled = assistantListBulletMarker(marker);
+			// Bullets are structure, not signal: mute the ◉ glyph instead of inheriting the theme accent.
+			if (styled.startsWith("◉ ")) return `${BORDER_COLOR}◉${TRANSPARENT_RESET} ${styled.slice(2)}`;
+			return listBullet ? listBullet(styled) : styled;
+		},
 		codeBlock: (text: string) => {
 			const styled = theme.codeBlock(text);
 			return codeBlockBackground && text ? `${codeBlockBackground}${styled}${TRANSPARENT_RESET}` : styled;
@@ -2509,7 +2513,7 @@ function toolHeader(tool: string, summary: string, theme: Theme, prefix = "", tr
 	applyThemePaletteIfNeeded(theme);
 	const label = theme.fg("toolTitle", theme.bold(tool));
 	const body = summary
-		? `${label} ${WRAP_MARK}${theme.fg("accent", summary)}`
+		? `${label} ${WRAP_MARK}${theme.fg("muted", summary)}`
 		: label;
 	return trailing ? `${prefix}${body}${trailing}` : `${prefix}${body}`;
 }
