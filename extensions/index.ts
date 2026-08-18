@@ -149,6 +149,8 @@ interface SettingsFile {
 	agentOutputPadding?: boolean;
 	/** Add a subtle ANSI background to assistant code lines. Defaults to true. */
 	agentCodeBackground?: boolean;
+	/** Chat-app style alignment for user message bubbles. Defaults to "right". */
+	userMessageAlign?: "left" | "right";
 	bashOutputMode?: "opencode" | "summary" | "preview";
 	bashCollapsedLines?: number;
 	/** Show a small live output preview while tools are still running. Defaults to true. */
@@ -2189,6 +2191,22 @@ function backgroundUserMessageLine(line: string, width: number, first: boolean):
 	return `${USER_MESSAGE_BG} ${labelText}${USER_MESSAGE_BG}${backgroundContent}${USER_MESSAGE_BG}${padding} ${TRANSPARENT_RESET}`;
 }
 
+/** ChatGPT-style bubble: sized to content, capped at ~70% width, pushed to the right edge. */
+function rightAlignedUserMessageLines(lines: string[], width: number): string[] {
+	const cap = Math.max(12, Math.floor(width * 0.7));
+	const innerMax = Math.max(1, cap - 2);
+	const cleaned = lines.map(cleanUserMessageLine);
+	const bubbleInner = Math.min(innerMax, Math.max(1, ...cleaned.map((line) => visibleWidth(line))));
+	return cleaned.map((raw) => {
+		const content = clampLineWidth(raw, bubbleInner);
+		const backgroundContent = content.replaceAll(RESET, `${RESET}${USER_MESSAGE_BG}`);
+		const padding = " ".repeat(Math.max(0, bubbleInner - visibleWidth(content)));
+		const bubble = `${USER_MESSAGE_BG} ${backgroundContent}${USER_MESSAGE_BG}${padding} ${TRANSPARENT_RESET}`;
+		const leftPad = " ".repeat(Math.max(0, width - (bubbleInner + 2)));
+		return `${leftPad}${bubble}`;
+	});
+}
+
 function visitMarkdownDescendants(root: unknown, visit: (md: InstanceType<typeof Markdown>) => void): void {
 	if (!root || typeof root !== "object") return;
 	const node = root as { children?: unknown[] };
@@ -2215,10 +2233,15 @@ function patchUserMessageRender(): void {
 			}
 		});
 		const boxWidth = Math.max(1, width);
-		const contentWidth = Math.max(1, boxWidth - 7);
+		const alignRight = readSettings().userMessageAlign !== "left";
+		const contentWidth = alignRight
+			? Math.max(1, Math.floor(boxWidth * 0.7) - 2)
+			: Math.max(1, boxWidth - 7);
 		const lines = originalRender.call(this, contentWidth);
 		if (!Array.isArray(lines) || lines.length === 0) return lines;
-		const rendered = lines.map((line: string, index: number) => backgroundUserMessageLine(line, boxWidth, index === 0));
+		const rendered = alignRight
+			? rightAlignedUserMessageLines(lines, boxWidth)
+			: lines.map((line: string, index: number) => backgroundUserMessageLine(line, boxWidth, index === 0));
 		const clamped = rendered.map((line) => clampLineWidth(line, boxWidth));
 		return storeMessageRenderCache(this, width, applyTerminalCopyZones(clamped));
 	};

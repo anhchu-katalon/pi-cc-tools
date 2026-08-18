@@ -10,6 +10,7 @@
   "groupToolCalls": true,
   "agentOutputPadding": false,
   "agentCodeBackground": true,
+  "userMessageAlign": "right",
   "bashOutputMode": "opencode",
   "bashCollapsedLines": 10,
   "liveToolPreview": true,
