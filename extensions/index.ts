@@ -1624,15 +1624,27 @@ function assistantListBulletMarker(marker: string): string {
 // Paint a fenced code block as a solid rectangle: re-assert the background after
 // every internal reset (so syntax tokens don't punch holes) and pad each row to
 // the block's widest visible line (so the right edge is straight, not ragged).
-function paintCodeBlockLines(lines: string[], bg: string): string[] {
+// When a fence language is known, prepend a muted label row inside the panel.
+function normalizeCodeLanguageLabel(language?: string): string {
+	const raw = (language ?? "").trim().toLowerCase();
+	if (!raw) return "";
+	return /^[a-z0-9+#._-]{1,20}$/.test(raw) ? raw : "";
+}
+
+function paintCodeBlockLines(lines: string[], bg: string, language?: string): string[] {
 	if (!bg) return lines;
-	let maxWidth = 0;
+	const label = normalizeCodeLanguageLabel(language);
+	let maxWidth = label ? visibleWidth(label) + 1 : 0;
 	for (const line of lines) maxWidth = Math.max(maxWidth, visibleWidth(line));
-	return lines.map((line) => {
+	const painted = lines.map((line) => {
 		const filled = line.replaceAll(RESET, `${RESET}${bg}`);
 		const pad = " ".repeat(Math.max(0, maxWidth - visibleWidth(line)));
 		return `${bg}${filled}${pad}${TRANSPARENT_RESET}`;
 	});
+	if (!label) return painted;
+	const headerPad = " ".repeat(Math.max(0, maxWidth - visibleWidth(label) - 1));
+	const header = `${bg}${WORKED_LINE_FG} ${label}${RESET}${bg}${headerPad}${TRANSPARENT_RESET}`;
+	return [header, ...painted];
 }
 
 function copySafeMarkdownTheme(theme: MarkdownThemeLike): MarkdownThemeLike {
@@ -1657,7 +1669,7 @@ function copySafeMarkdownTheme(theme: MarkdownThemeLike): MarkdownThemeLike {
 		highlightCode: theme.highlightCode
 			? (code: string, language?: string) =>
 				codeBlockBackground
-					? paintCodeBlockLines(theme.highlightCode!(code, language), codeBlockBackground)
+					? paintCodeBlockLines(theme.highlightCode!(code, language), codeBlockBackground, language)
 					: theme.highlightCode!(code, language)
 			: undefined,
 		// Pi's Markdown renderer otherwise adds two spaces to every code line.
